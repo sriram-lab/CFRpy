@@ -265,11 +265,11 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
     if len(on_rxns)==0 and len(off_rxns)==0: 
         print('No CFR constraints detected: returning default solution')
         with cobra_model as model: 
+            obj = model.solver.objective.expression
+            s = str(obj).split(' ')
+            obj_rxns = [i.split('*')[-1] for i in s if '*' in i]
+            obj_rxns = [r for r in obj_rxns if r in model.reactions._dict.keys()]
             if pfba_flag: 
-                obj = model.solver.objective.expression
-                s = str(obj).split(' ')
-                obj_rxns = [i.split('*')[-1] for i in s if '*' in i]
-                obj_rxns = [r for r in obj_rxns if r in model.reactions._dict.keys()]
                 variables = chain(*((rxn.forward_variable, rxn.reverse_variable) for rxn in model.reactions if rxn.id not in obj_rxns))
                 model.objective.set_linear_coefficients({v: -1e-6 for v in variables})
             solution = model.optimize(solver)
