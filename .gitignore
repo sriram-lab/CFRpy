@@ -1,5 +1,8 @@
 CLAUDE.md
 .claude/
 .venv/
-.archived/
+archived/
+plots/
 __pycache__/
+qdk-learning/
+qdk-learning*
