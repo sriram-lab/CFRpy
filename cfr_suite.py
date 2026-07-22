@@ -123,8 +123,9 @@ def opt_constraint(x, sense, b):
     return c
 
 def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[], 
-                 on_params:set=(0.01, 0.001), off_params:set=(0.01, 0.001), 
-                 pfba_flag:bool=True, solver:str='gurobi'): 
+                 on_params:set=(0.01, 0.001), off_params:set=(0.01, 0.),
+                 pfba_flag:bool=True, pfba_params:set=(1e-6, 0.),
+                 solver:str='gurobi'): 
     """
     Optimize a COBRA model via constrain flux regulation (CFR). 
     
@@ -225,8 +226,16 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
             except: 
                 on_rxns = on_list
         elif any(item in cobra_model.genes for item in on_list): 
+            gene_list = [gene for gene in on_list if gene in cobra_model.genes]
+            if len(gene_list) < len(on_list):
+                n = len(on_list) - len(gene_list)
+                excluded = [gene for gene in on_list if gene not in cobra_model.genes]
+                warn(f'The following {n} genes not present in the COBRA model: {", ".join(excluded)}')
             with cobra_model: 
-                on_rxns = [rxn.id for rxn in knock_out_model_genes(cobra_model, on_list)]
+                on_rxns = [rxn.id for rxn in knock_out_model_genes(cobra_model, gene_list)]
+        else:
+            warn('No valid genes or reactions detected in `on_list`')
+            on_rxns = []
 
     # Check off_list
     if len(off_list)==0: 
@@ -238,9 +247,17 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
             except: 
                 off_rxns = off_list
         elif any(item in cobra_model.genes for item in off_list): 
+            gene_list = [gene for gene in off_list if gene in cobra_model.genes]
+            if len(gene_list) < len(off_list):
+                n = len(off_list) - len(gene_list)
+                excluded = [gene for gene in off_list if gene not in cobra_model.genes]
+                warn(f'The following {n} genes not present in the COBRA model: {", ".join(excluded)}')
             with cobra_model: 
-                off_rxns = [rxn.id for rxn in knock_out_model_genes(cobra_model, off_list)]
-
+                off_rxns = [rxn.id for rxn in knock_out_model_genes(cobra_model, gene_list)]
+        else:
+            warn('No valid genes or reactions detected in `off_list`')
+            off_rxns = []
+    """
     # Check on_params
     if any(type(x) is not float for x in on_params): 
         raise TypeError('Provide a set of float values for on_params')
@@ -256,7 +273,8 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
         raise ValueError('Provide a boolean value between 0 and 10 for kappa')
     if off_params[1] < 0 or off_params[1] > 1: 
         raise ValueError('Provide a boolean value between 0 and 1 for epsilon 2')
-    
+    """
+
     # Check solver
     if solver not in ('gurobi', 'glpk'): 
         raise ValueError('Invalid solver: must be either gurobi or glpk')
@@ -286,6 +304,7 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
 
         # Define function inputs
         n1, n2 = len(on_rxns), len(off_rxns)
+        print(n2)
         w1, e1 = on_params
         w2, e2 = off_params
         dtype = float
@@ -295,7 +314,8 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
             pfba_rxns = [rxn.id for rxn in cobra_model.reactions if rxn.id not in off_rxns]
         else: 
             pfba_rxns = []
-        n3, w3, e3 = len(pfba_rxns), 1e-6, 0.
+        n3 = len(pfba_rxns)
+        w3, e3 = pfba_params
 
         # Re-define inputs
         n = 2*n1 + 2*n2 + 2*n3
@@ -324,7 +344,56 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
         ub = np.concatenate((ub, np.ones(2*n1, dtype=dtype), 1000*np.ones(2*n2 + 2*n3, dtype=dtype)))
         vtype = np.repeat(['C', 'B', 'C'], (S.shape[1], 2*n1, 2*n2 + 2*n3))
         sense = np.concatenate((np.repeat(['='], S.shape[0]), np.tile(['>', '<'], n1 + n2 + n3)))
-        obj = np.concatenate((c, np.repeat([w1, -w2, -w3], (2*n1, 2*n2, 2*n3))))
+
+        # Assign weights to objective function
+        if isinstance(w1, float):
+            c1 = np.array(2*n1*[w1], dtype=dtype)
+        elif isinstance(w1, dict):
+            if any(key in [rxn.id for rxn in cobra_model.reactions] for key in w1.keys()):
+                c1 = np.array([w1[rxn] if rxn in w1.keys() else 0.01 for rxn in on_rxns], dtype=dtype)
+            elif any(key in [gene.id for gene in cobra_model.genes] for key in w1.keys()):
+                w1_map = {rxn: 0.01 for rxn in on_rxns}
+                for gene, weight in w1.items(): 
+                    rxn_list = [rxn.id for rxn in cobra_model.genes.get_by_id(gene).reactions]
+                    w1_map.update({rxn: weight for rxn in rxn_list})
+                c1 = np.array([w1_map[rxn] for rxn in on_rxns], dtype=dtype)
+            else:
+                warn('No keys in `w1` match COBRA model genes or reactions')
+                c1 = np.array(n1*[0.01], dtype=dtype)
+            c1 = np.repeat(c1, 2)
+            print(c1)
+        if isinstance(w2, float):
+            c2 = np.array(2*n2*[-w2], dtype=dtype)
+        elif isinstance(w2, dict):
+            if any(key in [rxn.id for rxn in cobra_model.reactions] for key in w2.keys()):
+                c2 = np.array([-w2[rxn] if rxn in w2.keys() else -0.01 for rxn in off_rxns], dtype=dtype)
+            elif any(key in [gene.id for gene in cobra_model.genes] for key in w2.keys()):
+                w2_map = {rxn: 0.01 for rxn in off_rxns}
+                for gene, weight in w2.items(): 
+                    rxn_list = [rxn.id for rxn in cobra_model.genes.get_by_id(gene).reactions]
+                    w2_map.update({rxn: weight for rxn in rxn_list})
+                c2 = np.array([-w2_map[rxn] for rxn in off_rxns], dtype=dtype)
+            else:
+                warn('No keys in `w2` match COBRA model genes or reactions')
+                c2 = np.array(n2*[-0.01], dtype=dtype)
+            c2 = np.repeat(c2, 2)
+            print(c2)
+        if isinstance(w3, float):
+            c3 = np.array(2*n3*[-w3], dtype=dtype)
+        elif isinstance(w3, dict):
+            if any(key in [rxn.id for rxn in cobra_model.reactions] for key in w3.keys()):
+                c3 = np.array([-w3[rxn] if rxn in w3.keys() else -1e-6 for rxn in pfba_rxns], dtype=dtype)
+            elif any(key in [gene.id for gene in cobra_model.genes] for key in w3.keys()):
+                w3_map = {rxn: 1e-6 for rxn in pfba_rxns}
+                for gene, weight in w3.items(): 
+                    rxn_list = [rxn.id for rxn in cobra_model.genes.get_by_id(gene).reactions]
+                    w3_map.update({rxn: weight for rxn in rxn_list})
+                c3 = np.array([-w3_map[rxn] for rxn in pfba_rxns], dtype=dtype)
+            else:
+                warn('No keys in `w3` match COBRA model genes or reactions')
+                c3 = np.array(n3*[-1e-6], dtype=dtype)
+            c3 = np.repeat(c3, 2)
+        obj = np.concatenate((c, c1, c2, c3))
 
         # Construct CFR model
         if solver=='gurobi': 
