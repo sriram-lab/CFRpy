@@ -304,7 +304,6 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
 
         # Define function inputs
         n1, n2 = len(on_rxns), len(off_rxns)
-        print(n2)
         w1, e1 = on_params
         w2, e2 = off_params
         dtype = float
@@ -361,7 +360,6 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
                 warn('No keys in `w1` match COBRA model genes or reactions')
                 c1 = np.array(n1*[0.01], dtype=dtype)
             c1 = np.repeat(c1, 2)
-            print(c1)
         if isinstance(w2, float):
             c2 = np.array(2*n2*[-w2], dtype=dtype)
         elif isinstance(w2, dict):
@@ -377,7 +375,6 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
                 warn('No keys in `w2` match COBRA model genes or reactions')
                 c2 = np.array(n2*[-0.01], dtype=dtype)
             c2 = np.repeat(c2, 2)
-            print(c2)
         if isinstance(w3, float):
             c3 = np.array(2*n3*[-w3], dtype=dtype)
         elif isinstance(w3, dict):
