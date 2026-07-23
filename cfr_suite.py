@@ -472,7 +472,6 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
             if model.Status==2: 
                 status = 'optimal'
                 fluxes = pd.Series(model.X[:len(r_dict)], index=r_dict.keys())
-                # objective = fluxes[c!=0].sum()
                 objective = fluxes.dot(c)
             else: 
                 warn('Unable to determine optimal CFR solution. Returning indeterminate solution')
@@ -505,7 +504,6 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
             status = model.optimize()
             if status=='optimal': 
                 fluxes = pd.Series([model.variables[rxn].primal for rxn in r_dict.keys()], index=r_dict.keys())
-                # objective = fluxes[c!=0].sum()
                 objective = fluxes.dot(c)
             else: 
                 warn('Unable to determine optimal CFR solution. Returning indeterminate solution')
