@@ -388,8 +388,13 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
     if return_var not in ('solution', 'model'): 
         raise ValueError('Invalid return_var: must be either solution or model')
 
+    # Extract weight and epsilon parameters
+    w1, e1 = on_params
+    w2, e2 = off_params
+    w3, e3 = pfba_params
+
     # Return default solution if both lists are empty
-    if len(on_rxns)==0 and len(off_rxns)==0:
+    if len(on_rxns)==0 and len(off_rxns)==0 and not pfba_flag:
         if verbose:
             print('No CFR constraints detected: returning default solution')
         with cobra_model as model: 
@@ -397,11 +402,13 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
             s = str(obj).split(' ')
             obj_rxns = [i.split('*')[-1] for i in s if '*' in i]
             obj_rxns = [r for r in obj_rxns if r in model.reactions._dict.keys()]
-            if pfba_flag: 
-                variables = chain(*((rxn.forward_variable, rxn.reverse_variable) for rxn in model.reactions if rxn.id not in obj_rxns))
-                model.objective.set_linear_coefficients({v: -w3 for v in variables})
-            solution = model.optimize(solver)
-            solution.objective_value = solution.fluxes[obj_rxns].sum()
+            model.slim_optimize()
+            objective_value = sum(model.reactions.get_by_id(r).flux for r in obj_rxns)
+            status = model.solver.status
+            primals = model.solver.primal_values
+            fluxes = pd.Series({rxn.id: primals[rxn.id] - primals[rxn.reverse_id] for rxn in model.reactions})
+            solution = Solution(objective_value=objective_value, status=status, fluxes=fluxes)
+        model = cobra_model.solver.problem
     # Apply CFR
     else: 
         # Extract COBRA model data
@@ -414,8 +421,6 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
 
         # Define function inputs
         n1, n2 = len(on_rxns), len(off_rxns)
-        w1, e1 = on_params
-        w2, e2 = off_params
         dtype = float
 
         # Account for pFBA
@@ -424,7 +429,6 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
         else: 
             pfba_rxns = []
         n3 = len(pfba_rxns)
-        w3, e3 = pfba_params
 
         # Re-define inputs
         n = 2*n1 + 2*n2 + 2*n3
