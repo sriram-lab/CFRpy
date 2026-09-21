@@ -398,12 +398,7 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
         if verbose:
             print('No CFR constraints detected: returning default solution')
         with cobra_model as model: 
-            obj = model.solver.objective.expression
-            s = str(obj).split(' ')
-            obj_rxns = [i.split('*')[-1] for i in s if '*' in i]
-            obj_rxns = [r for r in obj_rxns if r in model.reactions._dict.keys()]
-            model.slim_optimize()
-            objective_value = sum(model.reactions.get_by_id(r).flux for r in obj_rxns)
+            objective_value = model.slim_optimize()
             status = model.solver.status
             primals = model.solver.primal_values
             fluxes = pd.Series({rxn.id: primals[rxn.id] - primals[rxn.reverse_id] for rxn in model.reactions})
