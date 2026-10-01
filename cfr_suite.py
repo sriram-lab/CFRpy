@@ -105,6 +105,88 @@ def geneKO_from_rxnGeneMat(cobra_model, gene_list):
     return [rxn for rxn in rxn_set if not rxn.functional]
 
 
+def get_reactions(cobra_model, items, label, verbose=True):
+    """
+    Convert a list of genes or reactions (objects or IDs) to model reaction IDs.
+
+    """
+    if len(items)==0:
+        return []
+    ids = [getattr(item, 'id', item) for item in items]
+    rxn_ids = [i for i in ids if i in cobra_model.reactions]
+    gene_ids = [i for i in ids if i in cobra_model.genes and i not in cobra_model.reactions]
+    if rxn_ids and gene_ids:
+        raise ValueError(f'`{label}` mixes {len(rxn_ids)} reactions (e.g., {", ".join(map(str, rxn_ids[:3]))}) '
+                         f'and {len(gene_ids)} genes (e.g., {", ".join(map(str, gene_ids[:3]))}): '
+                         f'provide reaction IDs only or gene IDs only')
+    if rxn_ids:
+        pool, kind = cobra_model.reactions, 'reactions'
+    elif gene_ids:
+        pool, kind = cobra_model.genes, 'genes'
+    else:
+        warn(f'No valid genes or reactions detected in `{label}`')
+        return []
+    excluded = [i for i in ids if i not in pool]
+    if excluded:
+        warn(f'The following {len(excluded)} {kind} are not present in the COBRA model: {", ".join(map(str, excluded))}')
+    valid = list(dict.fromkeys(i for i in ids if i in pool))
+    if kind=='reactions':
+        return valid
+    try:
+        with cobra_model:
+            rxns = [rxn.id for rxn in geneKO_from_rxnGeneMat(cobra_model, valid)]
+        if verbose:
+            print(f'Determined {label} reactions from rxnGeneMat')
+    except Exception:
+        with cobra_model:
+            rxns = [rxn.id for rxn in knock_out_model_genes(cobra_model, valid)]
+    return rxns
+
+
+def check_weight(cobra_model, w, name):
+    """
+    Validate a weight given as a float or a dict of floats keyed by reaction or gene IDs.
+
+    """
+    values = list(w.values()) if isinstance(w, dict) else [w]
+    if not all(isinstance(v, float) for v in values):
+        raise TypeError(f'Provide a float or a dictionary of float values for {name}')
+    if any(v < 0 or v > 10 for v in values):
+        raise ValueError(f'Provide float values between 0 and 10 for {name}')
+    if not isinstance(w, dict):
+        return
+    rxn_keys = [key for key in w if key in cobra_model.reactions]
+    gene_keys = [key for key in w if key in cobra_model.genes and key not in cobra_model.reactions]
+    if rxn_keys and gene_keys:
+        raise ValueError(f'`{name}` mixes {len(rxn_keys)} reaction keys (e.g., {", ".join(map(str, rxn_keys[:3]))}) '
+                         f'and {len(gene_keys)} gene keys (e.g., {", ".join(map(str, gene_keys[:3]))}): '
+                         f'key weights by reaction IDs only or by gene IDs only')
+    unmatched = [key for key in w if key not in rxn_keys and key not in gene_keys]
+    if len(unmatched)==len(w):
+        warn(f'No keys in `{name}` match COBRA model genes or reactions: using default weights')
+    elif unmatched:
+        warn(f'The following {len(unmatched)} keys in `{name}` do not match COBRA model genes or reactions '
+             f'and will be ignored: {", ".join(map(str, unmatched))}')
+
+
+def weight_vector(cobra_model, w, rxn_ids, default):
+    """
+    Build per-reaction weights from a float or a dict keyed by reaction or gene IDs.
+    Assumes `w` has already been validated with `check_weight`.
+
+    """
+    if isinstance(w, float):
+        return np.full(len(rxn_ids), w)
+    if any(key in cobra_model.reactions for key in w):
+        w_map = w
+    else:
+        w_map = dict()
+        for gene, weight in w.items():
+            if gene in cobra_model.genes:
+                w_map.update({rxn.id: weight for rxn in cobra_model.genes.get_by_id(gene).reactions})
+    return np.array([w_map.get(rxn, default) for rxn in rxn_ids], dtype=float)
+
+
 def opt_variable(name, lb, ub, vtype): 
     """
     Define an optlang variable.
@@ -206,8 +288,8 @@ def opt_constraint(x, sense, b):
     return c
 
 def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[], 
-                 on_params:set=(0.01, 0.001), off_params:set=(0.01, 0.), 
-                 pfba_flag:bool=True, pfba_params:set=(1e-6, 0.), 
+                 on_params:tuple=(0.01, 0.001), off_params:tuple=(0.01, 0.), 
+                 pfba_flag:bool=True, pfba_params:tuple=(1e-6, 0.), 
                  solver:str='gurobi', gurobi_params:dict=None, 
                  return_var:str='solution', verbose:bool=True): 
     """
@@ -223,35 +305,37 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
         List of active (on) genes or reactions.
     off_list : list
         List of inactive (off) genes or reactions.
-    on_params : set, optional 
-        Set of parameter constrains on active (on) reactions. The first argument corresponds to rho (weight coefficient) 
-        while the second argument corresponds to epsilon 1 (minimum flux). 
-    off_params : set, optional 
-        Set of parameter constrains on inactive (off) reactions. The first argument corresponds to kappa (weight coefficient) 
-        while the second argument corresponds to epsilon 2 (minimum flux). 
+    on_params : tuple, optional 
+        (rho, epsilon 1). rho is a float, or a dict of floats keyed by reaction or gene IDs 
+        (unlisted reactions default to 0.01). epsilon 1 is the minimum flux for active reactions.
+    off_params : tuple, optional 
+        (kappa, epsilon 2). kappa is a float, or a dict of floats keyed by reaction or gene IDs 
+        (unlisted reactions default to 0.01). epsilon 2 is the flux tolerance for inactive reactions.
     pfba_flag : boolean, optional 
         Boolean flag for applying parsimonious flux balance analysis (pFBA).
-    pfba_params : set, optional 
-        Set of parameter constrains on non-inactive (non-off) reactions. The first argument corresponds to kappa2 (weight coefficient) 
-        while the second argument corresponds to epsilon 3 (minimum flux). 
+    pfba_params : tuple, optional 
+        (kappa2, epsilon 3). kappa2 is a float, or a dict of floats keyed by reaction or gene IDs 
+        (unlisted reactions default to 1e-6). epsilon 3 is the flux tolerance for pFBA. 
     solver : string, optional 
         String that specifies which optimization solver to use (only 'gurobi' and 'glpk' supported). 
     gurobi_params : dictionary, optional
         Dictionary of user-defined Gurobi model parameters.
     return_var : string, optional 
         String that specifies which variable to return (choose 'solution' or 'model'). 
+    verbose : boolean, optional 
+        Boolean flag for printing optimization progress and results.
 
     Returns
     -------
     Solution
         A COBRA solution object.
     Model
-        A COBRA model object with CFR constraints applied.
+        A Gurobi or GLPK model object with CFR constraints applied.
         
     Raises
     ------
     TypeError
-        Raised when non-float values are assigned to `on_params` or `off_params`.
+        Raised when weights are not floats or dicts of floats, or epsilons are not floats.
 
     ValueError
         Raised when an incompatible value is provided as a function input.
@@ -309,79 +393,34 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
     if not all(hasattr(cobra_model, attr) for attr in cobra_attrs):
         raise ValueError("Invalid COBRA model: requires {} attributes.".format(', '.join(cobra_attrs)))
 
+    # Check on_params, off_params, and pfba_params
+    param_names = {'on_params': ('rho', 'epsilon 1'), 'off_params': ('kappa', 'epsilon 2'), 
+                   'pfba_params': ('kappa2', 'epsilon 3')}
+    for label, params in zip(param_names, (on_params, off_params, pfba_params)):
+        w_name, e_name = param_names[label]
+        check_weight(cobra_model, params[0], w_name)
+        if not isinstance(params[1], float):
+            raise TypeError(f'Provide a float value for {e_name} in {label}')
+        if params[1] < 0 or params[1] > 1:
+            raise ValueError(f'Provide a float value between 0 and 1 for {e_name}')
+    
     # Check on_list
-    if len(on_list)==0: 
-        on_rxns = []
-    else: 
-        if any(item in cobra_model.reactions for item in on_list): 
-            try: 
-                on_rxns = [rxn.id for rxn in on_list]
-            except: 
-                on_rxns = on_list
-        elif any(item in cobra_model.genes for item in on_list): 
-            try:
-                with cobra_model:
-                    on_rxns = [rxn.id for rxn in geneKO_from_rxnGeneMat(cobra_model, on_list)]
-                if verbose:
-                    print('Determined active reactions from rxnGeneMat')
-            except:
-                with cobra_model: 
-                    on_rxns = [rxn.id for rxn in knock_out_model_genes(cobra_model, on_list)]
+    on_rxns = get_reactions(cobra_model, on_list, 'on_list', verbose)
 
     # Check off_list
-    if len(off_list)==0: 
-        off_rxns = []
-    else: 
-        if any(item in cobra_model.reactions for item in off_list): 
-            try: 
-                off_rxns = [rxn.id for rxn in off_list]
-            except: 
-                off_rxns = off_list
-        elif any(item in cobra_model.genes for item in off_list): 
-            try:
-                with cobra_model:
-                    off_rxns = [rxn.id for rxn in geneKO_from_rxnGeneMat(cobra_model, off_list)]
-                if verbose:
-                    print('Determined inactive reactions from rxnGeneMat')
-            except:
-                with cobra_model: 
-                    off_rxns = [rxn.id for rxn in knock_out_model_genes(cobra_model, off_list)]
+    off_rxns = get_reactions(cobra_model, off_list, 'off_list', verbose)
 
     # Consolidate conflicting on/off reactions (if needed)
     if len(set(on_rxns) & set(off_rxns)) > 0:
         off_rxns = [rxn for rxn in off_rxns if rxn not in on_rxns]
     on_rxns, off_rxns = sorted(on_rxns), sorted(off_rxns)
 
-    # Check on_params
-    if any(type(x) is not float for x in on_params): 
-        raise TypeError('Provide a set of float values for on_params')
-    if on_params[0] < 0 or on_params[0] > 10: 
-        raise ValueError('Provide a float value between 0 and 10 for rho')
-    if on_params[1] < 0 or on_params[1] > 1: 
-        raise ValueError('Provide a float value between 0 and 1 for epsilon 1')
-    
-    # Check off_params
-    if any(type(x) is not float for x in off_params): 
-        raise TypeError('Provide a set of float values for off_params')
-    if off_params[0] < 0 or off_params[0] > 10: 
-        raise ValueError('Provide a float value between 0 and 10 for kappa')
-    if off_params[1] < 0 or off_params[1] > 1: 
-        raise ValueError('Provide a float value between 0 and 1 for epsilon 2')
-
-    # Check pfba_params
-    if any(type(x) is not float for x in pfba_params): 
-        raise TypeError('Provide a set of float values for pfba_params')
-    if pfba_params[0] < 0 or pfba_params[0] > 10: 
-        raise ValueError('Provide a float value between 0 and 10 for kappa2')
-    if pfba_params[1] < 0 or pfba_params[1] > 1: 
-        raise ValueError('Provide a float value between 0 and 1 for epsilon 3')
-    
     # Check solver
     if solver not in ('gurobi', 'glpk'): 
         raise ValueError('Invalid solver: must be either gurobi or glpk')
 
     # Check on gurobi_params
-    if isinstance(gurobi_params, dict):
+    if gurobi_params is not None and not isinstance(gurobi_params, dict):
         raise ValueError('Provide a dictionary for gurobi_params')
 
     # Check return_var
@@ -447,12 +486,17 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
         b3 = np.array([-e3, e3], dtype=dtype)
         rhs = np.concatenate((b, np.tile(b1, n1), np.tile(b2, n2), np.tile(b3, n3)))
 
-        # Define remaining CFR fields
+        # Define CFR fields: bounds, variable types, directionality
         lb = np.concatenate((lb, np.zeros(n, dtype=dtype)))
         ub = np.concatenate((ub, np.ones(2*n1, dtype=dtype), 1000*np.ones(2*n2 + 2*n3, dtype=dtype)))
         vtype = np.repeat(['C', 'B', 'C'], (S.shape[1], 2*n1, 2*n2 + 2*n3))
         sense = np.concatenate((np.repeat(['='], S.shape[0]), np.tile(['>', '<'], n1 + n2 + n3)))
-        obj = np.concatenate((c, np.repeat([w1, -w2, -w3], (2*n1, 2*n2, 2*n3))))
+
+        # Define CFR field: objective coefficients
+        c1 = weight_vector(cobra_model, w1, on_rxns, 0.01)
+        c2 = weight_vector(cobra_model, w2, off_rxns, 0.01)
+        c3 = weight_vector(cobra_model, w3, pfba_rxns, 1e-6)
+        obj = np.concatenate((c, np.repeat(c1, 2), -np.repeat(c2, 2), -np.repeat(c3, 2)))
 
         # Construct CFR model
         if solver=='gurobi': 
@@ -493,8 +537,9 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
                 x = [model.variables[i] for i in idx]
                 c_dict = {v: w for v, w in zip(x, A[i, idx].toarray().reshape((-1,)))}
                 constraint.set_linear_coefficients(c_dict)
-            j = np.argwhere(c).reshape((-1,))[0]
-            model.objective = Objective(c[j] * model.variables[j], direction='max')
+            nz = np.flatnonzero(c)
+            expr = sum(c[j] * model.variables[j] for j in nz) if len(nz) else 0 * model.variables[0]
+            model.objective = Objective(expr, direction='max')
             idx = np.arange(start=S.shape[1], stop=A.shape[1], step=1)
             x = [model.variables[i] for i in idx]
             o_dict = {v: w for v, w in zip(x, obj[idx])}
@@ -518,7 +563,7 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
     elif return_var=='model':
         return model
 
-def apply_cfr(cobra_model, data:pd.DataFrame, thresh:set=(-2, 2), **kwargs): 
+def apply_cfr(cobra_model, data:pd.DataFrame, thresh:tuple=(-2, 2), **kwargs): 
     """
     Apply CFR across a set of conditions.
 
@@ -528,16 +573,16 @@ def apply_cfr(cobra_model, data:pd.DataFrame, thresh:set=(-2, 2), **kwargs):
         A COBRA Model object.
     data : pandas.DataFrame
         A dataframe of omics data to infer active (on) and inactive (off) genes.
-        None: the dataframe index is expected to match with genes defined in the COBRA model.
-    thresh : set, optional
-        A set of numeric values used to determine up- and down-regulated genes.
+        Note: the dataframe index is expected to match with genes defined in the COBRA model.
+    thresh : tuple, optional
+        A tuple of numeric values used to determine up- and down-regulated genes.
     kwargs : dict
         Keyword arguments accepted in the `cfr_optimize` function.
 
     Returns
     -------
-    List
-        A list containing Result objects for each condition.
+    Dict
+        A dictionary containing Result objects for each condition.
 
     Raises
     ------
@@ -570,7 +615,7 @@ def apply_cfr(cobra_model, data:pd.DataFrame, thresh:set=(-2, 2), **kwargs):
     
     # Check thresh
     if any(not isinstance(x, (int, float)) for x in thresh): 
-        raise TypeError('Provide a set of numeric values for `thresh`')
+        raise TypeError('Provide a tuple of numeric values for `thresh`')
     
     # Extract model genes
     genes = [gene.id for gene in cobra_model.genes]
@@ -647,7 +692,7 @@ def get_fluxes(results, metadata:bool=False, cobra_model=None):
     if metadata: 
         dfm = pd.DataFrame({'Reaction': [cobra_model.reactions.get_by_id(rxn).name for rxn in df.index]}, index=df.index)
         if all('subsystem' in vars(rxn).keys() for rxn in cobra_model.reactions): 
-            dfm['Subsystem'] = [cobra_model.reactions.get_by_id(rxn).name for rxn in dfm.index]
+            dfm['Subsystem'] = [cobra_model.reactions.get_by_id(rxn).subsystem for rxn in dfm.index]
         else: 
             dfm['Subsystem'] = np.nan
         df = dfm.merge(df, left_index=True, right_index=True)
