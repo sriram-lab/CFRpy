@@ -153,9 +153,9 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
     if ~isfield(gurobiParams, 'OutputFlag')
         gurobiParams.OutputFlag = 0;
     end
-    if ~isfield(gurobiParams, 'IntFeasTol')
-        gurobiParams.IntFeasTol = 1e-9;
-    end
+%     if ~isfield(gurobiParams, 'IntFeasTol')
+%         gurobiParams.IntFeasTol = 1e-9;
+%     end
 
     % pFBA reactions: all reactions that are not "off"
     if options.pfba
