@@ -225,19 +225,23 @@ function [fluxstate, grate, solverobj, solg1, model] = cfr_optimize_legacy(...
     nnew = 2*non + 2*noff;
     [m, n] = size(model1.S);
 
+    % Interleave two column vectors: [a1; b1; a2; b2; ...]
+    % Rows/columns are interleaved per reaction to match cfr_optimize.m
+    % and cfr_suite.py: [lower_r1; upper_r1; lower_r2; upper_r2; ...]
+    pair = @(a, b) reshape([a(:), b(:)].', [], 1);
+
     rows = (1:nnew)';
-    Arxn = sparse(rows, [onidx; onidx; offidx; offidx], 1, nnew, n);
+    Arxn = sparse(rows, [pair(onidx, onidx); pair(offidx, offidx)], 1, nnew, n);
     Aaux = sparse(rows, rows, ...
-        [-(epsilon + M); (epsilon + M); ones(noff, 1); -ones(noff, 1)], nnew, nnew);
+        [pair(-(epsilon + M), epsilon + M); pair(ones(noff, 1), -ones(noff, 1))], nnew, nnew);
 
     model.A = [model.A, sparse(m, nnew); Arxn, Aaux];
-    model.rhs = [model.rhs; -M*ones(non, 1); M*ones(non, 1); -epsilon2; epsilon2];
-    model.sense = [model.sense; repmat('>', non, 1); repmat('<', non, 1); ...
-        repmat('>', noff, 1); repmat('<', noff, 1)];
+    model.rhs = [model.rhs; pair(-M*ones(non, 1), M*ones(non, 1)); pair(-epsilon2, epsilon2)];
+    model.sense = [model.sense; repmat('><', 1, non + noff).'];
     model.lb = [model1.lb(:); zeros(nnew, 1)];
     model.ub = [model1.ub(:); ones(2*non, 1); 1000*ones(2*noff, 1)];
     model.vtype = [repmat('C', n, 1); repmat('B', 2*non, 1); repmat('C', 2*noff, 1)];
-    model.obj = [model1.c(:); rho; rho; -kappa; -kappa];
+    model.obj = [model1.c(:); pair(rho, rho); -pair(kappa, kappa)];
 
 %% DEFINE FUNCTION OUTPUTS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
