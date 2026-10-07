@@ -153,7 +153,8 @@ function [fluxstate, grate, solverobj, solg1, model] = cfr_optimize_legacy(...
     rho = rho(keep);
 
     % Consolidate contradicting reactions ("on" takes precedence)
-    keep = ismember(offreactions, model1.rxns) & ~ismember(offreactions, onreactions);
+    keep = ismember(offreactions, model1.rxns) & ...
+        ~ismember(offreactions, onreactions);
     offreactions = offreactions(keep);
     kappa = kappa(keep);
     epsilon2 = epsilon2(keep);
