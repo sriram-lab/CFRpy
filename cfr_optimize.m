@@ -190,6 +190,8 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
     %                y1, y2 binary; maximize onWeight*(y1 + y2)
     % "off"/pFBA:    v + s >= -eps            v - r <= eps
     %                s, r >= 0; minimize weight*(s + r)
+    % Rows/columns are interleaved per reaction to match cfr_suite.py:
+    % [lower_r1; upper_r1; lower_r2; upper_r2; ...]
     slackRxns = [offRxns; pfbaRxns];
     slackWeight = [offWeight; repmat(options.pfbaWeight, numel(pfbaRxns), 1)];
     slackTolerance = [offTolerance; repmat(options.pfbaTolerance, numel(pfbaRxns), 1)];
@@ -199,20 +201,23 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
     nSlack = numel(slackIdx);
     nAux = 2*nOn + 2*nSlack;
 
+    % Interleave two column vectors: [a1; b1; a2; b2; ...]
+    pair = @(a, b) reshape([a(:), b(:)].', [], 1);
+
     rows = (1:nAux)';
-    Arxn = sparse(rows, [onIdx; onIdx; slackIdx; slackIdx], 1, nAux, nRxns);
+    Arxn = sparse(rows, [pair(onIdx, onIdx); pair(slackIdx, slackIdx)], 1, nAux, nRxns);
     Aaux = sparse(rows, rows, ...
-        [-(onMinFlux + bigM); (onMinFlux + bigM); ones(nSlack, 1); -ones(nSlack, 1)], nAux, nAux);
+        [pair(-(onMinFlux + bigM), onMinFlux + bigM); pair(ones(nSlack, 1), -ones(nSlack, 1))], nAux, nAux);
 
     gurobiModel = struct();
     gurobiModel.A = [S, sparse(nMets, nAux); Arxn, Aaux];
-    gurobiModel.rhs = [rhs; -bigM*ones(nOn, 1); bigM*ones(nOn, 1); -slackTolerance; slackTolerance];
-    gurobiModel.sense = [sense; repmat('>', nOn, 1); repmat('<', nOn, 1); ...
-        repmat('>', nSlack, 1); repmat('<', nSlack, 1)];
+    gurobiModel.rhs = [rhs; pair(-bigM*ones(nOn, 1), bigM*ones(nOn, 1)); ...
+        pair(-slackTolerance, slackTolerance)];
+    gurobiModel.sense = [sense; repmat('><', 1, nOn + nSlack).'];
     gurobiModel.lb = [model.lb(:); zeros(nAux, 1)];
     gurobiModel.ub = [model.ub(:); ones(2*nOn, 1); 1000*ones(2*nSlack, 1)];
     gurobiModel.vtype = [repmat('C', nRxns, 1); repmat('B', 2*nOn, 1); repmat('C', 2*nSlack, 1)];
-    gurobiModel.obj = [model.c(:); onWeight; onWeight; -slackWeight; -slackWeight];
+    gurobiModel.obj = [model.c(:); pair(onWeight, onWeight); -pair(slackWeight, slackWeight)];
     gurobiModel.modelsense = 'max';
 
 %% DEFINE FUNCTION OUTPUTS %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
