@@ -174,9 +174,9 @@ function [fluxstate, grate, solverobj, solg1, model] = cfr_optimize_legacy(...
     if ~isfield(params, 'OutputFlag')
         params.OutputFlag = 0;
     end
-    if ~isfield(params, 'IntFeasTol')
-        params.IntFeasTol = 1e-9;
-    end
+%     if ~isfield(params, 'IntFeasTol')
+%         params.IntFeasTol = 1e-9;
+%     end
 
     % Apply PFBA (if prompted)
     if minfluxflag
