@@ -19,6 +19,9 @@ function [fluxstate, grate, solverobj, solg1, model] = cfr_optimize_legacy(...
     % - a full (non-sparse) model1.S is accepted
     % - params.IntFeasTol defaults to 1e-9, so "on" binaries cannot be
     %   credited without flux under the big-M constraints
+    % - invalid gurobi parameters raise a warning and are ignored
+    %   (previously, unknown names were silently ignored and invalid
+    %   values stopped the function with an error)
     % - non-optimal Gurobi solutions return NaN values
     % - "on" and "off" constraints are built in one step (faster)
     %
@@ -30,7 +33,8 @@ function [fluxstate, grate, solverobj, solg1, model] = cfr_optimize_legacy(...
     %
     % Author:   Sriram Chandrasekaran
     % Created:  October 12, 2010
-    % Updates:  October 6, 2026 (Carolina H. Chung)
+    % Updates:  October 8, 2026 (Carolina H. Chung)
+    %           October 6, 2026 (Carolina H. Chung)
     %           July 14, 2026 (Carolina H. Chung)
     %           September 20, 2020 (Carolina H. Chung)
     %           November 6, 2019 (Scott Campit)
@@ -78,8 +82,11 @@ function [fluxstate, grate, solverobj, solg1, model] = cfr_optimize_legacy(...
         7. kappa2:      relative weight for pFBA reactions
            -> default:  kappa2 = 1e-6
 
-        8. params:      parameter values to pass to gurobi
-           -> default:  params.OutputFlag = 0, params.IntFeasTol = 1e-9
+        8. params:      parameter values to pass to gurobi, validated with
+                        cfr_suite.check_gurobi_params (invalid or duplicated
+                        parameters raise a warning and are ignored);
+                        OutputFlag is always set to 0
+           -> default:  struct()
 
         kappa, rho, epsilon and epsilon2 are scalars or vectors with one
         value per input reaction (mode = 1). With gene lists (mode = 0),
@@ -167,13 +174,12 @@ function [fluxstate, grate, solverobj, solg1, model] = cfr_optimize_legacy(...
     kappa = kappa(ia);
     epsilon2 = epsilon2(ia);
 
-    % Gurobi parameters: don't display output; strict integrality for big-M
+    % Gurobi parameters: drop invalid ones (as cfr_optimize.m); don't display output
     if (~exist('params','var')) || (isempty(params))
         params = struct();
     end
-    if ~isfield(params, 'OutputFlag')
-        params.OutputFlag = 0;
-    end
+    params = cfr_suite.check_gurobi_params(params, false);
+    params.OutputFlag = 0;
 
     % Apply PFBA (if prompted)
     if minfluxflag
