@@ -10,7 +10,8 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
     % Default values match cfr_optimize in cfr_suite.py, and the outputs
     % cover both of its return_var choices (a solution and the solver
     % model). Differences from
-    % constrain_flux_regulation.m are listed in cfr_optimize_legacy.m; in
+    % constrain_flux_regulation.m are listed in cfr_optimize_legacy.m
+    % (both in matlab/legacy); in
     % addition, this version uses name-value options, returns the final
     % reaction lists and per-reaction diagnostics, and adds a pFBA tolerance.
     %
@@ -22,7 +23,8 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
     %
     % Author:   Sriram Chandrasekaran
     % Created:  October 12, 2010
-    % Updates:  October 6, 2026 (Carolina H. Chung)
+    % Updates:  October 8, 2026 (Carolina H. Chung)
+    %           October 6, 2026 (Carolina H. Chung)
     %           July 14, 2026 (Carolina H. Chung)
     %           September 20, 2020 (Carolina H. Chung)
     %           November 6, 2019 (Scott Campit)
@@ -60,8 +62,17 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
            -> default:  1e-6
         pfbaTolerance:  flux tolerance for pFBA reactions (epsilon 3), 0-1
            -> default:  0
-        gurobiParams:   gurobi parameters
-           -> default:  OutputFlag = 0, IntFeasTol = 1e-9
+        gurobiParams:   gurobi parameters, validated with
+                        cfr_suite.check_gurobi_params (invalid or duplicated
+                        parameters raise a warning and are ignored);
+                        OutputFlag is always set to 0
+           -> default:  struct()
+        verbose:        print progress statements and valid gurobi
+                        parameters (as verbose in cfr_suite.py)
+           -> default:  true
+        checkGurobiParams:  validate gurobiParams; apply_cfr sets false
+                        after validating them once for all conditions
+           -> default:  true
 
         onWeight, onMinFlux, offWeight and offTolerance are scalars or
         vectors with one value per entry of a reaction list. With gene
@@ -89,24 +100,23 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
 
         2. gurobiModel:     gurobi model structure with CFR constraints;
                             return_var='model' in cfr_suite.py. Solve it
-                            again with gurobi(gurobiModel, struct(...
-                            'OutputFlag', 0, 'IntFeasTol', 1e-9)).
+                            again with gurobi(gurobiModel, params).
 
     EXAMPLE USAGE:
         1. Default usage:
-           >> solution = cfr_optimize(model, onRxns, offRxns);
+           >> solution = cfr_suite.cfr_optimize(model, onRxns, offRxns);
            >> solution.f, solution.v
 
         2. Gene lists with custom weights:
-           >> solution = cfr_optimize(model, upGenes, downGenes, ...
+           >> solution = cfr_suite.cfr_optimize(model, upGenes, downGenes, ...
                     listType="genes", onWeight=1e-3, offWeight=1e-3)
 
         3. Without pFBA (name-value syntax for MATLAB R2019b-R2020b):
-           >> solution = cfr_optimize(model, onRxns, offRxns, 'pfba', false)
+           >> solution = cfr_suite.cfr_optimize(model, onRxns, offRxns, 'pfba', false)
 
         4. Solution and gurobi model with CFR constraints:
-           >> [solution, gurobiModel] = cfr_optimize(model, onRxns, offRxns);
-           >> [~, gurobiModel] = cfr_optimize(model, onRxns, offRxns);
+           >> [solution, gurobiModel] = cfr_suite.cfr_optimize(model, onRxns, offRxns);
+           >> [~, gurobiModel] = cfr_suite.cfr_optimize(model, onRxns, offRxns);
     %}
 
     arguments
@@ -122,15 +132,17 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
         options.pfbaWeight (1,1) {mustBeNumeric, mustBeNonnegative, mustBeLessThanOrEqual(options.pfbaWeight, 10)} = 1e-6
         options.pfbaTolerance (1,1) {mustBeNumeric, mustBeNonnegative, mustBeLessThanOrEqual(options.pfbaTolerance, 1)} = 0
         options.gurobiParams (1,1) struct = struct()
+        options.verbose (1,1) logical = true
+        options.checkGurobiParams (1,1) logical = true
     end
 
 %% RESOLVE GENE/REACTION LISTS AND SET PARAMETERS %%%%%%%%%%%%%%%%%%%%%%%%%
 
     % Convert lists to reactions; keep per-reaction parameters aligned
     [onRxns, onParams] = resolve_list(model, onList, 'onList', options.listType, ...
-        {options.onWeight, options.onMinFlux}, {'onWeight', 'onMinFlux'});
+        {options.onWeight, options.onMinFlux}, {'onWeight', 'onMinFlux'}, options.verbose);
     [offRxns, offParams] = resolve_list(model, offList, 'offList', options.listType, ...
-        {options.offWeight, options.offTolerance}, {'offWeight', 'offTolerance'});
+        {options.offWeight, options.offTolerance}, {'offWeight', 'offTolerance'}, options.verbose);
     [onWeight, onMinFlux] = onParams{:};
     [offWeight, offTolerance] = offParams{:};
 
@@ -148,11 +160,12 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
     offWeight = offWeight(ia);
     offTolerance = offTolerance(ia);
 
-    % Gurobi parameters: don't display output; strict integrality for big-M
+    % Gurobi parameters: drop invalid ones (as cfr_suite.py); don't display output
     gurobiParams = options.gurobiParams;
-    if ~isfield(gurobiParams, 'OutputFlag')
-        gurobiParams.OutputFlag = 0;
+    if options.checkGurobiParams
+        gurobiParams = cfr_suite.check_gurobi_params(gurobiParams, options.verbose);
     end
+    gurobiParams.OutputFlag = 0;
 %     if ~isfield(gurobiParams, 'IntFeasTol')
 %         gurobiParams.IntFeasTol = 1e-9;
 %     end
@@ -163,6 +176,11 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
         pfbaRxns = pfbaRxns(:);
     else
         pfbaRxns = cell(0, 1);
+    end
+
+    % No CFR constraints: the model is solved as plain FBA (as cfr_suite.py)
+    if options.verbose && isempty(onRxns) && isempty(offRxns) && ~options.pfba
+        fprintf('No CFR constraints detected: returning default solution\n');
     end
 
 %% CONVERT TO GUROBI FORMAT %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -262,7 +280,7 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
 
 end
 
-function [rxns, params] = resolve_list(model, list, label, listType, params, paramNames)
+function [rxns, params] = resolve_list(model, list, label, listType, params, paramNames, verbose)
     % Convert a gene or reaction list to model reactions (as get_reactions
     % in cfr_suite.py) and expand parameters to one value per reaction
     ids = cellstr(list);
@@ -316,6 +334,9 @@ function [rxns, params] = resolve_list(model, list, label, listType, params, par
         if any(known)
             [~, ~, rxns, ~] = deleteModelGenes(model, unique(ids(known)));
             rxns = rxns(:);
+            if verbose
+                fprintf('Determined %s reactions from rxnGeneMat\n', label);
+            end
         else
             rxns = cell(0, 1);
         end
