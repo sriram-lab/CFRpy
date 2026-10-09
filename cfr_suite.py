@@ -187,7 +187,97 @@ def weight_vector(cobra_model, w, rxn_ids, default):
     return np.array([w_map.get(rxn, default) for rxn in rxn_ids], dtype=float)
 
 
-def opt_variable(name, lb, ub, vtype): 
+class GurobiParams(dict):
+    """
+    Dictionary of Gurobi parameters already validated by `check_gurobi_params`.
+
+    """
+
+
+_GUROBI_PROBE = None
+
+def gurobi_probe():
+    """
+    Return a silent Gurobi model (created once) used to test parameter values.
+
+    """
+    global _GUROBI_PROBE
+    if _GUROBI_PROBE is None:
+        env = gp.Env(empty=True)
+        env.setParam('OutputFlag', 0)
+        env.setParam('LogToConsole', 0)
+        env.start()
+        _GUROBI_PROBE = gp.Model('probe', env=env)
+    return _GUROBI_PROBE
+
+
+def check_gurobi_params(gurobi_params, verbose=True):
+    """
+    Validate a dictionary of Gurobi parameters.
+
+    Each parameter is tested on a silent Gurobi model. Unknown names, values that Gurobi rejects,
+    and duplicated names (ignoring case) raise a warning; invalid parameters are dropped and the
+    last value of a duplicated name is kept. Valid parameters are printed when `verbose` is True.
+
+    Parameters
+    ----------
+    gurobi_params : dictionary
+        Dictionary of user-defined Gurobi model parameters.
+    verbose : boolean, optional
+        Boolean flag for printing the name and value of each valid parameter.
+
+    Returns
+    -------
+    GurobiParams
+        A dictionary of valid parameters keyed by Gurobi parameter names.
+
+    Examples
+    --------
+    >>> params = check_gurobi_params({'intfeastol': 1e-9, 'NotAParam': 1, 'MIPGap': -1})
+    UserWarning: Ignoring invalid Gurobi parameter NotAParam: Unknown parameter 'NotAParam'
+    UserWarning: Ignoring invalid Gurobi parameter MIPGap: Unable to set parameter MIPGap to value -1 (minimum is 0)
+    Set Gurobi parameter IntFeasTol to 1e-09
+
+    """
+    # Check gurobi_params
+    if gurobi_params is None:
+        return GurobiParams()
+    if not isinstance(gurobi_params, dict):
+        raise ValueError('Provide a dictionary for gurobi_params')
+
+    # Validate parameter names and values
+    names = {name.lower(): name for name in dir(GRB.Param) if not name.startswith('_')}
+    probe = gurobi_probe()
+    params, given = GurobiParams(), dict()
+    for key, value in gurobi_params.items():
+        name = names.get(str(key).lower())
+        if name is None:
+            warn(f"Ignoring invalid Gurobi parameter {key}: Unknown parameter '{key}'", stacklevel=2)
+            continue
+        try:
+            probe.setParam(name, value)
+        except (GurobiError, TypeError, ValueError) as e:
+            warn(f'Ignoring invalid Gurobi parameter {key}: {e}', stacklevel=2)
+            continue
+        finally:
+            probe.resetParams()
+            probe.Params.OutputFlag = 0
+            probe.Params.LogToConsole = 0
+        if name in params:
+            warn(f'Duplicated Gurobi parameter {name} (given as {given[name]} and {key}): using {key}', stacklevel=2)
+        params[name], given[name] = value, key
+
+    # Print valid parameters (if prompted)
+    if verbose:
+        for name, value in params.items():
+            value = format(value, 'g') if isinstance(value, (int, float)) else value
+            print(f'Set Gurobi parameter {name} to {value}')
+
+    # Return output
+    return params
+
+
+def opt_variable(name, lb, ub, vtype):
     """
     Define an optlang variable.
 
@@ -319,11 +409,12 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
     solver : string, optional 
         String that specifies which optimization solver to use (only 'gurobi' and 'glpk' supported). 
     gurobi_params : dictionary, optional
-        Dictionary of user-defined Gurobi model parameters.
-    return_var : string, optional 
-        String that specifies which variable to return (choose 'solution' or 'model'). 
-    verbose : boolean, optional 
-        Boolean flag for printing optimization progress and results.
+        Dictionary of user-defined Gurobi model parameters, validated with `check_gurobi_params`
+        (invalid or duplicated parameters raise a warning). OutputFlag is always set to 0.
+    return_var : string, optional
+        String that specifies which variable to return (choose 'solution' or 'model').
+    verbose : boolean, optional
+        Boolean flag for printing optimization progress and results (including valid Gurobi parameters).
 
     Returns
     -------
@@ -419,9 +510,11 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
     if solver not in ('gurobi', 'glpk'): 
         raise ValueError('Invalid solver: must be either gurobi or glpk')
 
-    # Check on gurobi_params
+    # Check on gurobi_params (already validated when called from apply_cfr)
     if gurobi_params is not None and not isinstance(gurobi_params, dict):
         raise ValueError('Provide a dictionary for gurobi_params')
+    if solver=='gurobi' and not isinstance(gurobi_params, GurobiParams):
+        gurobi_params = check_gurobi_params(gurobi_params, verbose)
 
     # Check return_var
     if return_var not in ('solution', 'model'): 
@@ -504,13 +597,10 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
             x = model.addMVar(shape=A.shape[1], lb=lb, ub=ub, vtype=vtype)
             model.addMConstr(A=A, x=x, sense=sense, b=rhs)
             model.setObjective(obj @ x, GRB.MAXIMIZE)
-            if gurobi_params:
-                for key, value in gurobi_params.items():
-                    try:
-                        model.setParam(key, value)
-                    except GurobiError:
-                        print(f'{key} is not a valid Gurobi parameter')
             model.Params.OutputFlag = 0
+            for key, value in gurobi_params.items():
+                if key!='OutputFlag':
+                    model.setParam(key, value)
             model.optimize()
             if model.Status==2: 
                 status = 'optimal'
@@ -578,6 +668,7 @@ def apply_cfr(cobra_model, data:pd.DataFrame, thresh:tuple=(-2, 2), **kwargs):
         A tuple of numeric values used to determine up- and down-regulated genes.
     kwargs : dict
         Keyword arguments accepted in the `cfr_optimize` function.
+        `gurobi_params` is validated once for all conditions.
 
     Returns
     -------
@@ -628,6 +719,10 @@ def apply_cfr(cobra_model, data:pd.DataFrame, thresh:tuple=(-2, 2), **kwargs):
     # Determine up- and down-regulated genes
     off_dict = {col: data[data[col] < thresh[0]].index.tolist() for col in data.columns}
     on_dict = {col: data[data[col] > thresh[1]].index.tolist() for col in data.columns}
+
+    # Validate Gurobi parameters once for all conditions
+    if kwargs.get('solver', 'gurobi')=='gurobi':
+        kwargs['gurobi_params'] = check_gurobi_params(kwargs.get('gurobi_params'), kwargs.get('verbose', True))
 
     # Determine solutions
     results = {}
