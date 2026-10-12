@@ -32,12 +32,11 @@ function results = apply_cfr(model, data, varargin)
         onWeight, offWeight, pfbaWeight, gurobiParams, verbose).
         gurobiParams is validated once for all conditions.
 
-        progressBar:    progress across conditions, shown with progressbar
-                        (MATLAB File Exchange) when it is on the path:
-                        1 = own bar, n > 1 = update bar n of a progressbar
-                        opened by the caller (e.g. an outer loop), 0 or
-                        false = no bar
-           -> default:  1
+        progressBar:    show a waitbar with the progress across conditions
+                        (skipped when MATLAB has no display, e.g. with
+                        -nodisplay)
+           -> type:     logical (or 0/1)
+           -> default:  true
 
     OUTPUTS:
         1. results:     one element per condition (order of data columns)
@@ -56,12 +55,8 @@ function results = apply_cfr(model, data, varargin)
            >> results = cfr_suite.apply_cfr(model, data, [-1.5 1.5], onWeight=1, ...
                     offWeight=1, pfbaWeight=1e-4, verbose=false);
 
-        3. Sub-bar inside an outer loop (the outer loop creates both bars):
-           >> progressbar('Objectives', 'Conditions');
-           >> for i = 1:numel(models)
-           >>     results{i} = cfr_suite.apply_cfr(models{i}, data, progressBar=2);
-           >>     progressbar(i/numel(models));
-           >> end
+        3. Without the progress bar:
+           >> results = cfr_suite.apply_cfr(model, data, progressBar=false);
     %}
 
     % Check model
@@ -93,16 +88,18 @@ function results = apply_cfr(model, data, varargin)
     values = values(~isThresh);
 
     % Separate progressBar (apply_cfr option, not passed to cfr_optimize)
-    progressBar = 1;
+    progressBar = true;
     isBar = strcmpi(names, 'progressBar');
     if any(isBar)
-        progressBar = double(values{find(isBar, 1, 'last')});
+        progressBar = values{find(isBar, 1, 'last')};
     end
     names = names(~isBar);
     values = values(~isBar);
-    if ~isscalar(progressBar) || progressBar < 0 || progressBar ~= round(progressBar)
-        error('Provide a non-negative integer (or logical) for progressBar');
+    if ~(islogical(progressBar) || isnumeric(progressBar)) || ~isscalar(progressBar) ...
+            || ~ismember(progressBar, [0 1])
+        error('Provide true or false for progressBar');
     end
+    progressBar = logical(progressBar);
 
     % Check thresh
     if ~isnumeric(thresh) || numel(thresh) ~= 2
@@ -134,16 +131,14 @@ function results = apply_cfr(model, data, varargin)
     data = data(ismember(genes, model.genes), :);
     genes = data.Properties.RowNames;
 
-    % Show progress (if progressbar from MATLAB File Exchange is installed);
-    % an own bar closes when finished or if an error interrupts the loop,
-    % a sub-bar (progressBar > 1) leaves the caller's progressbar open
+    % Show progress with a waitbar (needs a display); it closes when
+    % finished or if an error interrupts the loop
     conditions = data.Properties.VariableNames;
-    showProgress = progressBar > 0 && exist('progressbar', 'file') == 2 && ~isempty(conditions);
-    if showProgress && progressBar == 1
-        progressbar(sprintf('Applying CFR across %d conditions', numel(conditions)));
-        closeProgress = onCleanup(@() progressbar(1));
-    elseif showProgress
-        update_progress(progressBar, 0);
+    nConditions = numel(conditions);
+    bar = [];
+    if progressBar && usejava('awt') && nConditions > 0
+        bar = waitbar(0, sprintf('Applying CFR across %d conditions (0%%)', nConditions), 'Name', 'CFR');
+        closeProgress = onCleanup(@() close_progress(bar));
     end
 
     % Determine solutions
@@ -153,16 +148,17 @@ function results = apply_cfr(model, data, varargin)
         results(k).onList = genes(levels > thresh(2));
         results(k).offList = genes(levels < thresh(1));
         results(k).solution = cfr_suite.cfr_optimize(model, results(k).onList, results(k).offList, cfrArgs{:});
-        if showProgress
-            update_progress(progressBar, k/numel(conditions));
+        if isgraphics(bar)   % false if there is no bar or the user closed it
+            waitbar(k/nConditions, bar, ...
+                sprintf('Applying CFR across %d conditions (%.0f%%)', nConditions, 100*k/nConditions));
         end
     end
 
 end
 
-function update_progress(bar, fraction)
-    % Update one bar of progressbar, leaving the other bars unchanged
-    args = repmat({[]}, 1, bar);
-    args{bar} = fraction;
-    progressbar(args{:});
+function close_progress(bar)
+    % Close the waitbar if it is still open
+    if isgraphics(bar)
+        close(bar);
+    end
 end
