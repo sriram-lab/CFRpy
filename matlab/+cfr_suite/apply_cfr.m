@@ -33,8 +33,8 @@ function results = apply_cfr(model, data, varargin)
         gurobiParams is validated once for all conditions.
 
         progressBar:    show a waitbar with the progress across conditions
-                        (skipped when MATLAB has no display, e.g. with
-                        -nodisplay)
+                        and an estimate of the time remaining (skipped when
+                        MATLAB has no display, e.g. with -nodisplay)
            -> type:     logical (or 0/1)
            -> default:  true
 
@@ -143,17 +143,26 @@ function results = apply_cfr(model, data, varargin)
 
     % Determine solutions
     results = struct('condition', conditions, 'onList', [], 'offList', [], 'solution', []);
+    startTime = tic;
     for k = 1:numel(conditions)
         levels = data.(conditions{k});
         results(k).onList = genes(levels > thresh(2));
         results(k).offList = genes(levels < thresh(1));
         results(k).solution = cfr_suite.cfr_optimize(model, results(k).onList, results(k).offList, cfrArgs{:});
         if isgraphics(bar)   % false if there is no bar or the user closed it
+            remaining = toc(startTime) / k * (nConditions - k);
             waitbar(k/nConditions, bar, ...
-                sprintf('Applying CFR across %d conditions (%.0f%%)', nConditions, 100*k/nConditions));
+                sprintf('Applying CFR across %d conditions (%.0f%%)\n%s remaining', ...
+                nConditions, 100*k/nConditions, format_duration(remaining)));
         end
     end
 
+end
+
+function text = format_duration(seconds)
+    % Format a duration in seconds as hours:minutes:seconds (H:MM:SS)
+    seconds = round(seconds);
+    text = sprintf('%d:%02d:%02d', floor(seconds/3600), floor(mod(seconds, 3600)/60), mod(seconds, 60));
 end
 
 function close_progress(bar)
