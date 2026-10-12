@@ -1,3 +1,6 @@
+data/hgnc/
+data/gene_lists/
+reports/
 *.h5ad
 CLAUDE.md
 .claude/
@@ -7,3 +10,7 @@ plots/
 __pycache__/
 qdk-learning/
 qdk-learning*
+
+# HGNC downloads (fetched by hgnc.py; access history in data/hgnc/hgnc_access_log.csv)
+data/hgnc/hgnc_complete_set.txt
+data/hgnc/withdrawn.txt
