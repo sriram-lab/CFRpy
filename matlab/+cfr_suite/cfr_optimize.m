@@ -65,7 +65,8 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
         gurobiParams:   gurobi parameters, validated with
                         cfr_suite.check_gurobi_params (invalid or duplicated
                         parameters raise a warning and are ignored);
-                        OutputFlag is always set to 0
+                        OutputFlag is always set to 0; IntFeasTol
+                        defaults to 1e-9 unless given
            -> default:  struct()
         verbose:        print progress statements and valid gurobi
                         parameters (as verbose in cfr_suite.py)
@@ -100,7 +101,8 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
 
         2. gurobiModel:     gurobi model structure with CFR constraints;
                             return_var='model' in cfr_suite.py. Solve it
-                            again with gurobi(gurobiModel, params).
+                            again with gurobi(gurobiModel, struct(...
+                            'OutputFlag', 0, 'IntFeasTol', 1e-9)).
 
     EXAMPLE USAGE:
         1. Default usage:
@@ -166,9 +168,9 @@ function [solution, gurobiModel] = cfr_optimize(model, onList, offList, options)
         gurobiParams = cfr_suite.check_gurobi_params(gurobiParams, options.verbose);
     end
     gurobiParams.OutputFlag = 0;
-%     if ~isfield(gurobiParams, 'IntFeasTol')
-%         gurobiParams.IntFeasTol = 1e-9;
-%     end
+    if ~any(strcmpi(fieldnames(gurobiParams), 'IntFeasTol'))
+        gurobiParams.IntFeasTol = 1e-9;   % default: strict integrality for the big-M "on" constraints
+    end
 
     % pFBA reactions: all reactions that are not "off"
     if options.pfba

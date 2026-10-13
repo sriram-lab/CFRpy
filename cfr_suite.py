@@ -411,6 +411,7 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
     gurobi_params : dictionary, optional
         Dictionary of user-defined Gurobi model parameters, validated with `check_gurobi_params`
         (invalid or duplicated parameters raise a warning). OutputFlag is always set to 0.
+        IntFeasTol defaults to 1e-9 unless given.
     return_var : string, optional
         String that specifies which variable to return (choose 'solution' or 'model').
     verbose : boolean, optional
@@ -598,6 +599,7 @@ def cfr_optimize(cobra_model, on_list:list=[], off_list:list=[],
             model.addMConstr(A=A, x=x, sense=sense, b=rhs)
             model.setObjective(obj @ x, GRB.MAXIMIZE)
             model.Params.OutputFlag = 0
+            model.Params.IntFeasTol = 1e-9
             for key, value in gurobi_params.items():
                 if key!='OutputFlag':
                     model.setParam(key, value)

@@ -85,7 +85,8 @@ function [fluxstate, grate, solverobj, solg1, model] = cfr_optimize_legacy(...
         8. params:      parameter values to pass to gurobi, validated with
                         cfr_suite.check_gurobi_params (invalid or duplicated
                         parameters raise a warning and are ignored);
-                        OutputFlag is always set to 0
+                        OutputFlag is always set to 0; IntFeasTol
+                        defaults to 1e-9 unless given
            -> default:  struct()
 
         kappa, rho, epsilon and epsilon2 are scalars or vectors with one
@@ -180,6 +181,9 @@ function [fluxstate, grate, solverobj, solg1, model] = cfr_optimize_legacy(...
     end
     params = cfr_suite.check_gurobi_params(params, false);
     params.OutputFlag = 0;
+    if ~any(strcmpi(fieldnames(params), 'IntFeasTol'))
+        params.IntFeasTol = 1e-9;   % default: strict integrality for the big-M "on" constraints
+    end
 
     % Apply PFBA (if prompted)
     if minfluxflag
